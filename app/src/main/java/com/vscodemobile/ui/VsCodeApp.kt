@@ -239,6 +239,13 @@ fun VsCodeApp(
     var lastPushTime by remember { mutableLongStateOf(0L) }
     /** Linha (1-based) para onde o cursor vai quando o texto do doc carregar. */
     var pendingCaretLine by remember { mutableIntStateOf(0) }
+    /**
+     * A leitura do documento ativo falhou. Enquanto for true, salvar está
+     * bloqueado: o buffer da UI não representa o conteúdo do disco, e gravar
+     * por cima destruiria o arquivo original.
+     */
+    var loadFailed by remember { mutableStateOf(false) }
+    var loadError by remember { mutableStateOf<String?>(null) }
     var ctrlLatched by remember { mutableStateOf(false) }
     var altLatched by remember { mutableStateOf(false) }
     var terminalPinned by remember { mutableStateOf(false) }
@@ -513,13 +520,18 @@ fun VsCodeApp(
         redoStack.clear()
     }
 
-    fun readRef(ref: DocRef): String = when (ref) {
-        is DocRef.Local -> FileUtils.read(ref.file)
-        is DocRef.Saf -> DocumentUtils.readText(context, ref.uri)
+    /**
+     * Lê o documento. `null` = a leitura FALHOU (não é "arquivo vazio").
+     * O chamador precisa distinguir os dois casos: salvar por cima de uma
+     * leitura falha destrói o arquivo original.
+     */
+    fun readRef(ref: DocRef): String? = when (ref) {
+        is DocRef.Local -> FileUtils.readOrNull(ref.file)
+        is DocRef.Saf -> DocumentUtils.readTextOrNull(context, ref.uri)
     }
 
     fun writeRef(ref: DocRef, text: String): Boolean = when (ref) {
-        is DocRef.Local -> FileUtils.write(ref.file, text)
+        is DocRef.Local -> FileUtils.writeAtomic(ref.file, text)
         is DocRef.Saf -> DocumentUtils.writeText(context, ref.uri, text)
     }
 
@@ -549,6 +561,18 @@ fun VsCodeApp(
             }
             val text = withContext(Dispatchers.IO) { readRef(ref) }
             if (gen == loadGen) {
+                // Falha de leitura: NÃO marca como limpo e NÃO abre em branco
+                // fingindo estar vazio — salvar assim sobrescreveria o original.
+                if (text == null) {
+                    loadFailed = true
+                    dirty = true
+                    loadError = "Não foi possível ler ${ref.name}"
+                    rawText = ""
+                    fieldState = TextFieldValue("")
+                    return@launch
+                }
+                loadFailed = false
+                loadError = null
                 rawText = text
                 dirty = false
                 fieldState = TextFieldValue(text)
@@ -559,6 +583,14 @@ fun VsCodeApp(
     }
 
     fun saveCurrent(silent: Boolean = false) {
+        // Nunca grava quando a leitura falhou: o buffer atual não é o
+        // conteúdo do arquivo e a escrita destruiria o original.
+        if (loadFailed && currentFile != null) {
+            val msg = "Leitura falhou — não salvo para não sobrescrever ${currentFile!!.name}"
+            if (!silent) Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            scope.launch { snackbarHostState.showSnackbar(msg) }
+            return
+        }
         val target = currentFile ?: DocRef.Local(
             workspace.resolve("untitled.txt").also {
                 currentFile = DocRef.Local(it)
@@ -1050,7 +1082,8 @@ fun VsCodeApp(
 
     fun closeTab(ref: DocRef) {
         lspManager.noteClose(ref)
-        if (ref == currentFile && dirty) {
+        // dirty mas com leitura falha não pode ser salvo: o buffer não é o disco.
+        if (ref == currentFile && dirty && !loadFailed) {
             val snapshot = rawText
             scope.launch {
                 withContext(Dispatchers.IO) { writeRef(ref, snapshot) }
@@ -1061,11 +1094,21 @@ fun VsCodeApp(
             val next = openFiles.lastOrNull()
             currentFile = next
             if (next is DocRef.Local) {
-                rawText = FileUtils.read(next.file)
-                dirty = false
-                fieldState = TextFieldValue(rawText)
-                clearHistory()
-                lspManager.noteOpen(next, rawText)
+                val text = FileUtils.readOrNull(next.file)
+                if (text == null) {
+                    loadFailed = true
+                    loadError = "Não foi possível ler ${next.name}"
+                    rawText = ""
+                    fieldState = TextFieldValue("")
+                } else {
+                    loadFailed = false
+                    loadError = null
+                    rawText = text
+                    dirty = false
+                    fieldState = TextFieldValue(rawText)
+                    clearHistory()
+                    lspManager.noteOpen(next, rawText)
+                }
             } else if (next != null) {
                 val gen = ++loadGen
                 rawText = ""
@@ -1075,14 +1118,23 @@ fun VsCodeApp(
                 scope.launch {
                     val text = withContext(Dispatchers.IO) { readRef(next) }
                     if (gen == loadGen) {
-                        rawText = text
-                        fieldState = TextFieldValue(text)
-                        lspManager.noteOpen(next, text)
+                        if (text == null) {
+                            loadFailed = true
+                            loadError = "Não foi possível ler ${next.name}"
+                        } else {
+                            loadFailed = false
+                            loadError = null
+                            rawText = text
+                            fieldState = TextFieldValue(text)
+                            lspManager.noteOpen(next, text)
+                        }
                     }
                 }
             } else {
                 rawText = ""
                 dirty = false
+                loadFailed = false
+                loadError = null
                 fieldState = TextFieldValue("")
                 clearHistory()
             }
@@ -1278,15 +1330,48 @@ fun VsCodeApp(
                                 )
                             }
 
-                            EditorSurface(
-                                state = fieldState,
-                                highlighted = highlighted,
-                                fontSizeSp = editorFontSize,
-                                onFontSizeChange = { editorFontSize = it },
-                                empty = currentFile == null,
-                                onChange = { v -> applyEdit(v) },
-                                modifier = Modifier.weight(1f).fillMaxWidth()
-                            )
+                            if (loadFailed) {
+                                // A leitura falhou: mostrar o editor vazio sem
+                                // aviso levaria o usuário a salvar por cima.
+                                Column(
+                                    Modifier
+                                        .weight(1f)
+                                        .fillMaxWidth()
+                                        .background(theme.background.toCompose()),
+                                    verticalArrangement = Arrangement.Center,
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    CodiconIcon(
+                                        Codicon.Warning,
+                                        tint = Color(0xFFF85149),
+                                        sizeSp = 32
+                                    )
+                                    Spacer(Modifier.height(12.dp))
+                                    Text(
+                                        loadError ?: "Falha ao ler o arquivo",
+                                        color = Color(0xFFF85149),
+                                        fontSize = 14.sp,
+                                        modifier = Modifier.padding(horizontal = 24.dp)
+                                    )
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "Salvamento bloqueado para não sobrescrever o arquivo.",
+                                        color = theme.foreground.toCompose().copy(alpha = 0.7f),
+                                        fontSize = 12.sp,
+                                        modifier = Modifier.padding(horizontal = 24.dp)
+                                    )
+                                }
+                            } else {
+                                EditorSurface(
+                                    state = fieldState,
+                                    highlighted = highlighted,
+                                    fontSizeSp = editorFontSize,
+                                    onFontSizeChange = { editorFontSize = it },
+                                    empty = currentFile == null,
+                                    onChange = { v -> applyEdit(v) },
+                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                                )
+                            }
 
                             // A status bar some com o teclado aberto (a bottom bar vira teclas)
                             if (!imeVisible) {
@@ -1505,9 +1590,12 @@ fun VsCodeApp(
                 }
             } else {
                 val f = currentDir.resolve(clean)
-                FileUtils.write(f, "")
-                refreshExplorer()
-                openFile(DocRef.Local(f))
+                if (FileUtils.writeAtomic(f, "")) {
+                    refreshExplorer()
+                    openFile(DocRef.Local(f))
+                } else {
+                    Toast.makeText(context, "Não foi possível criar o arquivo", Toast.LENGTH_SHORT).show()
+                }
                 showNewFile = false
             }
         }
