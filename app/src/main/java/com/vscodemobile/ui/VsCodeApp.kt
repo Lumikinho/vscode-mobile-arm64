@@ -167,7 +167,13 @@ import com.vscodemobile.ui.terminal.PtySession
 import com.vscodemobile.ui.terminal.TermSession
 import com.vscodemobile.ui.terminal.TerminalScreen
 import com.vscodemobile.ui.workbench.BuiltinPlugins
+import com.vscodemobile.ui.plugins.PluginBridge
+import com.vscodemobile.ui.plugins.PluginManagerSheet
+import com.vscodemobile.ui.plugins.PluginSheetContent
+import com.vscodemobile.ui.plugins.PluginSource
+import com.vscodemobile.ui.plugins.SensitiveCommands
 import com.vscodemobile.ui.workbench.CommandRegistry
+import org.json.JSONObject
 import com.vscodemobile.ui.workbench.QuickAccessProvider
 import com.vscodemobile.ui.workbench.QuickAccessRegistry
 import com.vscodemobile.ui.workbench.QuickPickItem
@@ -180,7 +186,44 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlinx.coroutines.withContext
 
-private enum class ActiveView { EXPLORER, SEARCH, GIT, RUN, EXT }
+/** Containers embutidos que ocupam lugar fixo na bottom bar. */
+private val BuiltinContainerIds = setOf(
+    "workbench.view.explorer",
+    "workbench.view.search",
+    "workbench.view.scm",
+    "workbench.view.debug",
+    "workbench.view.extensions"
+)
+
+private fun BuiltinContainerLabel(id: String): String = when (id) {
+    "workbench.view.explorer" -> "Explorer"
+    "workbench.view.search" -> "Buscar"
+    "workbench.view.scm" -> "Git"
+    "workbench.view.debug" -> "Executar"
+    "workbench.view.extensions" -> "Extensões"
+    else -> id
+}
+
+/**
+ * Identidade de uma view aberta.
+ *
+ * Antes era um enum fechado de 5 valores, o que descartava qualquer container
+ * que um plugin registrasse ([navEntries] fazia mapNotNull com `when`).
+ * Agora é um id: embutidos usam [BUILTIN], plugins usam o id do container.
+ */
+data class ActiveView(val id: String, val plugin: PluginSource? = null) {
+    val isPlugin: Boolean get() = plugin != null
+
+    companion object {
+        val EXPLORER = ActiveView("workbench.view.explorer")
+        val SEARCH = ActiveView("workbench.view.search")
+        val GIT = ActiveView("workbench.view.scm")
+        val RUN = ActiveView("workbench.view.debug")
+        val EXT = ActiveView("workbench.view.extensions")
+
+        val BUILTIN = setOf(EXPLORER, SEARCH, GIT, RUN, EXT)
+    }
+}
 
 private const val KEY_SAF_ROOT = "saf_root"
 private const val KEY_SAF_NAME = "saf_name"
@@ -253,6 +296,12 @@ fun VsCodeApp(
     var terminalPinned by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
     var sheetView by remember { mutableStateOf<ActiveView?>(null) }
+    var showPluginManager by remember { mutableStateOf(false) }
+
+    /** Plugins WebView registrados (URL). Sobrevivem ao restart. */
+    var plugins by remember {
+        mutableStateOf(PluginSource.load(context.applicationContext))
+    }
 
     var ptyLibBroken by remember { mutableStateOf(false) }
 
@@ -1076,24 +1125,50 @@ fun VsCodeApp(
         else -> ActiveView.EXT
     }
 
-    fun containerForView(view: ActiveView) = when (view) {
-        ActiveView.EXPLORER -> "workbench.view.explorer"
-        ActiveView.SEARCH -> "workbench.view.search"
-        ActiveView.GIT -> "workbench.view.scm"
-        ActiveView.RUN -> "workbench.view.debug"
-        ActiveView.EXT -> "workbench.view.extensions"
-    }
+    fun containerForView(view: ActiveView): String = view.id
 
-    /** Entradas da bottom bar vindas dos containers registrados (ordem do registro). */
-    fun navEntries(): List<NavEntry> = ViewRegistry.sidebarContainers().mapNotNull { c ->
-        when (c.id) {
-            "workbench.view.explorer" -> NavEntry(c.id, c.icon, "Explorer")
-            "workbench.view.search" -> NavEntry(c.id, c.icon, "Buscar")
-            "workbench.view.scm" -> NavEntry(c.id, c.icon, "Git")
-            "workbench.view.debug" -> NavEntry(c.id, c.icon, "Executar")
-        "workbench.view.extensions" -> NavEntry(c.id, c.icon, "Extensões")
-            else -> null
-        }
+    /**
+     * Ponte do plugin. Superficie: executar comando do workbench e ler o
+     * documento ativo. Comandos que abrem PTY, instalam Alpine ou gravam em
+     * massa ficam bloqueados — quem controla a URL controla código.
+     */
+    fun pluginBridge(): PluginBridge = PluginBridge(
+        onExecuteCommand = { id, _ -> CommandRegistry.execute(id) },
+        onActiveDocument = {
+            val cf = currentFile
+            JSONObject()
+                .put("uri", cf?.id ?: "")
+                .put("name", cf?.name ?: "")
+                .put("languageId", SyntaxHighlighter.languageOf(cf?.name ?: ""))
+                .put("text", rawText)
+                .put("dirty", dirty)
+                .toString()
+        },
+        onShowMessage = { m ->
+            scope.launch { snackbarHostState.showSnackbar(m) }
+        },
+        onLog = { line -> Log.d("VsCodeMobile/plugin", line) },
+        isSensitive = { id -> SensitiveCommands.isDenied(id) }
+    )
+
+    /** Resolve um id de container para plugin, se houver um habilitado. */
+    fun pluginFor(id: String): PluginSource? =
+        plugins.firstOrNull { it.enabled && it.id == id }
+
+    fun viewFor(id: String): ActiveView =
+        pluginFor(id)?.let { ActiveView(it.id, it) } ?: viewForContainer(id)
+
+    /**
+     * Entradas da bottom bar: containers embutidos (título vem do registro, e
+     * não mais de um `when` hardcoded) seguidos dos plugins habilitados.
+     */
+    fun navEntries(): List<NavEntry> {
+        val builtin = ViewRegistry.sidebarContainers()
+            .filter { it.id in BuiltinContainerIds }
+            .map { NavEntry(it.id, it.icon, BuiltinContainerLabel(it.id)) }
+        val fromPlugins = plugins.filter { it.enabled }
+            .map { NavEntry("plugin:${it.id}", it.icon, it.title) }
+        return builtin + fromPlugins
     }
 
     fun closeTab(ref: DocRef) {
@@ -1178,7 +1253,8 @@ fun VsCodeApp(
                 restartShell = { shell?.restart() },
                 showProblems = { panelTab = 0; sheetVisible = true },
                 onLinuxSetup = { showLinuxSetup = true },
-                onLinuxShell = { openLinuxShell() }
+                onLinuxShell = { openLinuxShell() },
+                managePlugins = { showPluginManager = true }
             )
         )
         // Índice da palette construído fora da composição. Antes, items() fazia
@@ -1258,7 +1334,13 @@ fun VsCodeApp(
             activeKey = containerForView(activeView),
             onSelect = { key ->
                 terminalPinned = false
-                openViewSheet(viewForContainer(key))
+                openViewSheet(
+                    if (key.startsWith("plugin:")) {
+                        val pid = key.removePrefix("plugin:")
+                        plugins.firstOrNull { it.id == pid }
+                            ?.let { ActiveView(it.id, it) } ?: viewForContainer(key)
+                    } else viewFor(key)
+                )
             }
         )
     }
@@ -1297,7 +1379,14 @@ fun VsCodeApp(
                                     onSelectEntry = { key ->
                                         menuOpen = false
                                         terminalPinned = false
-                                        openViewSheet(viewForContainer(key))
+                                        openViewSheet(
+                                            if (key.startsWith("plugin:")) {
+                                                val pid = key.removePrefix("plugin:")
+                                                plugins.firstOrNull { it.id == pid }
+                                                    ?.let { ActiveView(it.id, it) }
+                                                    ?: viewForContainer(key)
+                                            } else viewFor(key)
+                                        )
                                     },
                                     actions = listOf(
                                         MenuAction(
@@ -1453,8 +1542,18 @@ fun VsCodeApp(
             val sv = sheetView
             if (sv != null) {
                 Box(Modifier.height(520.dp)) {
-                    if (sv == ActiveView.EXPLORER) ExplorerSheetContent()
-                    else LegacyViewSheetContent(sv)
+                    val plugin = sv.plugin
+                    when {
+                        plugin != null -> PluginSheetContent(
+                            plugin = plugin,
+                            bridge = pluginBridge(),
+                            onMessage = { m ->
+                                scope.launch { snackbarHostState.showSnackbar(m.take(200)) }
+                            }
+                        )
+                        sv == ActiveView.EXPLORER -> ExplorerSheetContent()
+                        else -> LegacyViewSheetContent(sv)
+                    }
                 }
             } else {
             ProblemsSheetContent(
@@ -1571,6 +1670,35 @@ fun VsCodeApp(
             },
             onDismiss = { showPalette = false; paletteQuery = "" }
         )
+    }
+    if (showPluginManager) {
+        ModalBottomSheet(
+            onDismissRequest = { showPluginManager = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = chrome.panel
+        ) {
+            PluginManagerSheet(
+                plugins = plugins,
+                onAdd = { title, url ->
+                    val p = PluginSource(
+                        id = url,
+                        title = title.ifBlank { url },
+                        url = url
+                    )
+                    plugins = plugins.filterNot { it.id == p.id } + p
+                    PluginSource.save(context.applicationContext, plugins)
+                },
+                onRemove = { id ->
+                    plugins = plugins.filterNot { it.id == id }
+                    PluginSource.save(context.applicationContext, plugins)
+                },
+                onToggle = { id ->
+                    plugins = plugins.map { if (it.id == id) it.copy(enabled = !it.enabled) else it }
+                    PluginSource.save(context.applicationContext, plugins)
+                },
+                onClose = { showPluginManager = false }
+            )
+        }
     }
     if (showThemePicker) {
         ThemePickerDialog(
@@ -1705,8 +1833,8 @@ private fun SideBar(
     onRun: () -> Unit, currentFile: File?
 ) {
     Column(Modifier.fillMaxWidth().fillMaxHeight().background(bg)) {
-        when (view) {
-            ActiveView.EXPLORER -> {
+        when (view.id) {
+            "workbench.view.explorer" -> {
                 SideHeader("EXPLORER", sectionColor, fg,
                     actions = {
                         IconButton(onClick = onNewFile, modifier = Modifier.size(28.dp)) {
@@ -1750,7 +1878,7 @@ private fun SideBar(
                     color = sectionColor, fontSize = 11.sp, modifier = Modifier.padding(10.dp)
                 )
             }
-            ActiveView.SEARCH -> {
+            "workbench.view.search" -> {
                 SideHeader("SEARCH", sectionColor, fg)
                 BoxSearch(searchQuery, onSearch, fg, sectionColor)
                 val all = remember(tick) { allFiles(workspace).filter {
@@ -1765,7 +1893,7 @@ private fun SideBar(
                     }
                 }
             }
-            ActiveView.GIT -> {
+            "workbench.view.scm" -> {
                 SideHeader("SOURCE CONTROL", sectionColor, fg)
                 Text("CHANGES", color = sectionColor, fontSize = 11.sp, modifier = Modifier.padding(10.dp, 6.dp, 10.dp, 2.dp))
                     Text("● ${currentFile?.name ?: "—"} (unsaved/saved in workspace)",
@@ -1773,13 +1901,13 @@ private fun SideBar(
                     Text("Branch: main* • auto-save ligado (afterDelay)",
                     color = sectionColor, fontSize = 11.sp, modifier = Modifier.padding(10.dp))
             }
-            ActiveView.RUN -> {
+            "workbench.view.debug" -> {
                 SideHeader("RUN AND DEBUG", sectionColor, fg)
                 Text("Terminal embutido na aba TERMINAL, ou Termux externo.",
                     color = fg, fontSize = 12.sp, modifier = Modifier.padding(10.dp))
                 TextButton(onClick = onRun) { Text("▷ Run in Termux") }
             }
-            ActiveView.EXT -> {
+            "workbench.view.extensions" -> {
                 SideHeader("EXTENSIONS", sectionColor, fg)
                 val exts = listOf("Kotlin" to true, "Python" to true, "JSON" to true, "Markdown" to true, "C/C++" to false)
                 LazyColumn {

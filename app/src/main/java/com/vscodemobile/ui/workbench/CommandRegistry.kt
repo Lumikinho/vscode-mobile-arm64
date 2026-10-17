@@ -29,6 +29,9 @@ object CommandRegistry {
     fun paletteCommands(): List<WorkbenchCommand> =
         commands.values.filter { MenuId.CommandPalette in it.menus }
 
+    /** Existe comando com esse id? (a ponte de plugins consulta antes de rodar) */
+    fun isRegistered(id: String): Boolean = commands.containsKey(id)
+
     fun execute(id: String): Boolean {
         val cmd = commands[id] ?: return false
         cmd.run()
