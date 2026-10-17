@@ -7,12 +7,45 @@ o versionamento é [SemVer](https://semver.org/lang/pt-BR/).
 
 ## [Não publicado]
 
+(nada ainda)
+
+## [1.2.0] — 2026-10-17
+
 ### Adicionado
 
-- Workflow do GitHub Actions (`.github/workflows/build.yml`): build do APK
-  `arm64-v8a` em JDK 17 + NDK 28.2.13676358, com upload do artefato.
-- `CHANGELOG.md` e `.gitattributes` (normalização de line ending para build
-  reprodutível).
+- **Userland do Termux dentro do app.** O bootstrap oficial `aarch64` é
+  baixado, conferido por sha256 e extraído no sandbox do próprio app: bash,
+  coreutils, git, python e `pkg install` reais, sem proot e sem root, e sem
+  depender do app Termux instalado no celular. Tag e digest fixados em
+  `TermuxEnv`.
+- **Leitor de zip com atributos Unix** (`ZipArchive`). O `ZipInputStream` do
+  JDK esconde o bit de symlink e o de exec, e o bootstrap depende dos dois.
+- **Recriação dos 1213 symlinks** do `SYMLINKS.txt`. O zip não os guarda como
+  entradas; sem eles faltam `sh`, `ls`, `awk` e boa parte do coreutils, que faz
+  dispatch por `argv[0]`.
+- **Plugins WebView carregados de URL**, com ponte de comandos e leitura do
+  documento ativo. `ActiveView` deixa de ser enum fechado para que um container
+  registrado por plugin não seja descartado, e o título dos containers passa a
+  vir do `ViewRegistry`. Gerenciador em `Plugins: Manage WebView Plugins`.
+- **Tela de configurações** com tema, fontes do editor e do terminal,
+  userland do Termux, plugins WebView e a versão do app.
+- **Checagem de versão contra a release do GitHub**, com comparação numérica
+  (`1.10.0` > `1.9.0`, ao contrário da comparação por string).
+- **Branch `Dev`** como integração: é ela que gera o APK de teste, e `main` só
+  recebe o que já passou por lá.
+
+### Corrigido
+
+- **`targetSdk` corrigido para 28.** Com 29 ou mais, o domínio SELinux nega
+  `execute` sobre `app_data_file` e nada do `filesDir` executa (medido no
+  aparelho: `rc=126`, `Permission denied`, em 34 e em 29; ok em 28). O Termux
+  mantém 28 pelo mesmo motivo.
+
+### Removido
+
+- **proot + Alpine minirootfs.** Além de ser inviável — o binário do proot mora
+  no `filesDir` e nunca chegaria a executar — o userland do Termux é relocalizável
+  e dispensa tradução de caminhos.
 
 ## [1.1.0] — 2026-10-16
 
@@ -106,6 +139,7 @@ o versionamento é [SemVer](https://semver.org/lang/pt-BR/).
 - **Ícone adaptativo** com a logo do VS Code e camada `monochrome` (Material
   You).
 
-[Não publicado]: https://github.com/Lumikinho/vscode-mobile-arm64/compare/v1.1.0...HEAD
+[Não publicado]: https://github.com/Lumikinho/vscode-mobile-arm64/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/Lumikinho/vscode-mobile-arm64/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Lumikinho/vscode-mobile-arm64/releases/tag/v1.1.0
 [1.0.0]: https://github.com/Lumikinho/vscode-mobile-arm64/releases/tag/v1.0.0

@@ -24,8 +24,8 @@ android {
         // rodar. O proprio Termux mantem targetSdk 28 por causa disso.
         // Compilar contra 34 continua valido; so o alvo muda.
         targetSdk = 28
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
 
         // Foco em celular ARM64
         ndk {
