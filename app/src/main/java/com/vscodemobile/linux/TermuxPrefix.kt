@@ -113,14 +113,85 @@ class TermuxPrefix(private val appCtx: Context) {
             "COLORTERM=truecolor",
             "LANG=en_US.UTF-8",
             "TERMUX_APP_PACKAGE_MANAGER=apt",
+            // apt e dpkg tem o prefixo do Termux compilado no binario, nos
+            // caminhos de DADOS (/etc/apt, /var/lib/dpkg). LD_LIBRARY_PATH
+            // cobre caminho de biblioteca, nao esse. E binario nao se
+            // reescreve sem corromper. Sao as variaveis que os dois respeitam
+            // para se relocalizar.
+            "APT_CONFIG=$p/etc/apt/apt.conf",
+            "DPKG_ADMINDIR=$p/var/lib/dpkg",
             "PWD=$cwd"
         )
     }
 
+    /**
+     * Cria o que o apt precisa e redireciona os caminhos de dados.
+     *
+     * Sem isso o `pkg install` falha com "Unable to determine a suitable
+     * packaging system type": o apt procura `etc/apt/apt.conf.d` e o dpkg
+     * procura `etc/dpkg/dpkg.cfg.d` no prefixo do Termux, que este processo
+     * nao pode nem ler.
+     */
+    private fun writeAptLayout() {
+        val p = prefix()
+        val arch = "aarch64"
+        listOf(
+            "var/cache/apt/archives/partial",
+            "var/lib/apt/lists/partial",
+            "var/log/apt",
+            "etc/apt/apt.conf.d",
+            "etc/apt/preferences.d",
+            "etc/dpkg/dpkg.cfg.d"
+        ).forEach { File(p, it).mkdirs() }
+
+        // Sempre sobrescreve: o arquivo e gerado aqui, nao editado a mao, e
+        // uma versao antiga dele mantem o apt quebrado mesmo depois da
+        // correcao — que foi o que aconteceu na primeira tentativa.
+        val aptConf = File(p, "etc/apt/apt.conf")
+        runCatching {
+            aptConf.writeText(
+                """
+                |# Gerado pelo VsCode Mobile: aponta o apt para o prefixo local.
+                |# Sem isso o apt procura /etc/apt no prefixo do Termux e falha
+                |# com "Unable to determine a suitable packaging system type".
+                |Dir "$p";
+                |Dir::State "$p/var/lib/apt";
+                |Dir::State::status "$p/var/lib/dpkg/status";
+                |Dir::Cache "$p/var/cache/apt";
+                |Dir::Etc "$p/etc/apt";
+                |Dir::Etc::trusted "$p/etc/apt/trusted.gpg";
+                |Dir::Etc::trustedparts "$p/etc/apt/trusted.gpg.d";
+                |Dir::Etc::preferences "$p/etc/apt/preferences";
+                |Dir::Etc::preferencesparts "$p/etc/apt/preferences.d";
+                |Dir::Etc::sourcelist "$p/etc/apt/sources.list";
+                |Dir::Etc::sourceparts "$p/etc/apt/sources.list.d";
+                |Dir::Log "$p/var/log/apt";
+                |Dir::Bin "$p/bin";
+                |Dir::Bin::dpkg "$p/bin/dpkg";
+                |Dir::Bin::methods "$p/lib/apt/methods";
+                |Dir::Bin::solvers "$p/lib/apt/solvers";
+                |Dir::Bin::planners "$p/lib/apt/planners";
+                |Dir::Bin::apt-key "$p/bin/apt-key";
+                |Dir::Bin::gpgv "$p/bin/gpgv";
+                |Binary::apt-key "$p/bin/apt-key";
+                |Binary::gpgv "$p/bin/gpgv";
+                |Binary::dpkg "$p/bin/dpkg";
+                |APT::Architecture "$arch";
+                |APT::Architectures "$arch";
+                |""".trimMargin()
+            )
+        }
+    }
+
     fun shell(): File {
-        // Idempotente e barato: garante o .bashrc mesmo quando o prefixo veio
-        // de uma instalação feita antes desta regra existir.
-        runCatching { ensureBashrc() }
+        // Idempotente e barato: garante o .bashrc e o layout do apt mesmo
+        // quando o prefixo veio de uma instalação feita antes destas regras
+        // existirem — evita obrigar a reinstalar 31 MB por causa delas.
+        runCatching {
+            writeAptLayout()
+            dropTermuxAppOnlyFiles()
+            ensureBashrc()
+        }
         return TermuxEnv.binFile(appCtx, "bash")
     }
 
@@ -245,8 +316,10 @@ class TermuxPrefix(private val appCtx: Context) {
                         e.isSymlink -> {
                             out.parentFile?.mkdirs()
                             out.delete()
-                            val target = archive.openStream(e).use { it.readBytes() }
-                                .toString(Charsets.UTF_8)
+                            val target = relocateTarget(
+                                archive.openStream(e).use { it.readBytes() }
+                                    .toString(Charsets.UTF_8)
+                            )
                             Os.symlink(target, out.absolutePath)
                         }
 
@@ -279,11 +352,12 @@ class TermuxPrefix(private val appCtx: Context) {
             val link = File(staging, linkPath)
             link.parentFile?.mkdirs()
             link.delete()
-            Os.symlink(target, link.absolutePath)
+            Os.symlink(relocateTarget(target), link.absolutePath)
         }
 
         TermuxEnv.homeDir(appCtx).mkdirs()
         TermuxEnv.tmpDir(appCtx).mkdirs()
+        writeAptLayout()
         ensureBashrc()
 
         val target = TermuxEnv.prefixDir(appCtx)
@@ -298,6 +372,24 @@ class TermuxPrefix(private val appCtx: Context) {
             throw IOException("não consegui ativar o prefixo novo")
         }
         trash.deleteRecursively()
+    }
+
+    /**
+     * Remove o que so faz sentido dentro do app Termux.
+     *
+     * O script de fallback da "second stage" roda a cada shell e tenta criar
+     * `/data/data/com.termux` e copiar para o home do Termux. Num prefixo
+     * relocavel ele so produz ruido; essa segunda etapa existe para configurar
+     * o app Termux na primeira execucao, o que ja fazemos aqui.
+     */
+    private fun dropTermuxAppOnlyFiles() {
+        val p = prefix()
+        listOf(
+            "etc/profile.d/01-termux-bootstrap-second-stage-fallback.sh",
+            "etc/motd.sh"
+        ).forEach { rel ->
+            runCatching { File(p, rel).delete() }
+        }
     }
 
     /**
@@ -342,6 +434,27 @@ class TermuxPrefix(private val appCtx: Context) {
         into: MutableList<Pair<String, String>>
     ) {
         into.addAll(SymlinkList.parse(reader) { safeName(it) })
+    }
+
+    /**
+     * Reloca um alvo de symlink que aponte para o prefixo de origem.
+     *
+     * O bootstrap usa symlink absoluto em varios lugares — o keyring do apt e
+     * o caso que importa: os arquivos `.gpg` em `etc/apt/trusted.gpg.d/`
+     * apontam para `/data/data/com.termux/files/usr/share/termux-keyring/`.
+     * Deixados como vem, ficam pendurados e o apt falha com NO_PUBKEY, sem
+     * nenhuma mensagem de arquivo quebrado.
+     *
+     * Alvo relativo nao e tocado: `bin/sh -> dash` continua valido.
+     */
+    private fun relocateTarget(target: String): String {
+        val from = TermuxEnv.ORIGIN_PREFIX
+        return when {
+            target == from -> prefix().absolutePath
+            target.startsWith("$from/") ->
+                prefix().absolutePath + target.removePrefix(from)
+            else -> target
+        }
     }
 
     /** Rejeita entrada que escape do staging. */
