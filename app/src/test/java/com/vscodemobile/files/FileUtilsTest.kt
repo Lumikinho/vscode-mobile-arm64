@@ -134,4 +134,72 @@ class FileUtilsTest {
         assertFalse(f.exists())
         assertFalse(tmpFile.exists())
     }
+
+    // ---- deteccao de binario ----
+
+    @Test
+    fun `byte nulo classifica como binario`() {
+        // assinatura de PNG
+        val png = byteArrayOf(
+            0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+            0x00, 0x00, 0x00, 0x0D
+        )
+        assertTrue(FileUtils.looksBinary(png))
+    }
+
+    @Test
+    fun `texto com acentos e emoji nao e binario`() {
+        val text = "fun main() { println(\"olá — ação 🎉\") }".toByteArray(Charsets.UTF_8)
+        assertFalse(FileUtils.looksBinary(text))
+    }
+
+    @Test
+    fun `texto com quebras e tabs nao e binario`() {
+        val text = "linha1\n\tlinha2\r\nlinha3\n".toByteArray()
+        assertFalse(FileUtils.looksBinary(text))
+    }
+
+    @Test
+    fun `array vazio nao e binario`() {
+        assertFalse(FileUtils.looksBinary(ByteArray(0)))
+    }
+
+    @Test
+    fun `nulo alem da janela de sondagem nao conta`() {
+        // Null depois de 8192 bytes: fora da sondagem, como o git faz.
+        val bytes = ByteArray(FileUtils.BINARY_PROBE + 10) { 'a'.code.toByte() }
+        bytes[FileUtils.BINARY_PROBE + 5] = 0
+        assertFalse(FileUtils.looksBinary(bytes))
+    }
+
+    @Test
+    fun `readDoc devolve Text para arquivo de texto`() {
+        val f = tmp.newFile("codigo.kt")
+        f.writeText("val x = 1")
+        val doc = FileUtils.readDoc(f)
+        assertTrue(doc is DocContent.Text)
+        assertEquals("val x = 1", (doc as DocContent.Text).content)
+    }
+
+    @Test
+    fun `readDoc devolve Binary e nao texto corrompido`() {
+        // O bug original: um .png era lido como texto e salvar gravava o lixo
+        // de volta. Aqui tem de vir Binary.
+        val f = tmp.newFile("imagem.png")
+        f.writeBytes(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x00, 0x0D, 0x0A))
+        assertTrue(FileUtils.readDoc(f) is DocContent.Binary)
+    }
+
+    @Test
+    fun `readDoc devolve Unreadable para arquivo inexistente`() {
+        val f = File(tmp.root, "fantasma.bin")
+        assertTrue(FileUtils.readDoc(f) is DocContent.Unreadable)
+    }
+
+    @Test
+    fun `readOrNull devolve null para binario`() {
+        val f = tmp.newFile("bin.dat")
+        f.writeBytes(byteArrayOf(1, 2, 0, 3))
+        assertNull(FileUtils.readOrNull(f))
+    }
 }

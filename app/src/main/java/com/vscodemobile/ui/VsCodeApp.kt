@@ -125,6 +125,7 @@ import com.vscodemobile.editor.EditorTheme
 import com.vscodemobile.editor.SyntaxHighlighter
 import com.vscodemobile.editor.ThemeManager
 import com.vscodemobile.editor.toCompose
+import com.vscodemobile.files.DocContent
 import com.vscodemobile.files.DocumentUtils
 import com.vscodemobile.files.FileUtils
 import com.vscodemobile.termux.TermuxHelper
@@ -240,12 +241,13 @@ fun VsCodeApp(
     /** Linha (1-based) para onde o cursor vai quando o texto do doc carregar. */
     var pendingCaretLine by remember { mutableIntStateOf(0) }
     /**
-     * A leitura do documento ativo falhou. Enquanto for true, salvar está
-     * bloqueado: o buffer da UI não representa o conteúdo do disco, e gravar
-     * por cima destruiria o arquivo original.
+     * Se não-nulo, o documento ativo NÃO PODE ser salvo, e o valor é o motivo.
+     *
+     * Cobre os dois casos em que o buffer da UI não representa o disco: a
+     * leitura falhou, ou o arquivo é binário (abriria como texto e salvar
+     * gravaria o conteúdo corrompido por cima do original).
      */
-    var loadFailed by remember { mutableStateOf(false) }
-    var loadError by remember { mutableStateOf<String?>(null) }
+    var loadBlock by remember { mutableStateOf<String?>(null) }
     var ctrlLatched by remember { mutableStateOf(false) }
     var altLatched by remember { mutableStateOf(false) }
     var terminalPinned by remember { mutableStateOf(false) }
@@ -525,9 +527,23 @@ fun VsCodeApp(
      * O chamador precisa distinguir os dois casos: salvar por cima de uma
      * leitura falha destrói o arquivo original.
      */
-    fun readRef(ref: DocRef): String? = when (ref) {
-        is DocRef.Local -> FileUtils.readOrNull(ref.file)
-        is DocRef.Saf -> DocumentUtils.readTextOrNull(context, ref.uri)
+    /**
+     * Lê o documento classificando texto/binário/ilegível.
+     *
+     * O chamador precisa dos três casos separados: salvar por cima de uma
+     * leitura falha destrói o arquivo, e salvar um binário aberto como texto
+     * o corrompe do mesmo jeito.
+     */
+    fun readRef(ref: DocRef): DocContent = when (ref) {
+        is DocRef.Local -> FileUtils.readDoc(ref.file)
+        is DocRef.Saf -> DocumentUtils.readDoc(context, ref.uri)
+    }
+
+    /** Motivo que impede salvar, ou null se o documento está ok. */
+    fun blockReason(doc: DocContent, name: String): String? = when (doc) {
+        is DocContent.Text -> null
+        is DocContent.Binary -> "$name é um arquivo binário — aberto somente para leitura"
+        is DocContent.Unreadable -> "Não foi possível ler $name"
     }
 
     fun writeRef(ref: DocRef, text: String): Boolean = when (ref) {
@@ -559,20 +575,20 @@ fun VsCodeApp(
             if (prevDirty && prev != null) {
                 withContext(Dispatchers.IO) { writeRef(prev, prevText) }
             }
-            val text = withContext(Dispatchers.IO) { readRef(ref) }
+            val doc = withContext(Dispatchers.IO) { readRef(ref) }
             if (gen == loadGen) {
-                // Falha de leitura: NÃO marca como limpo e NÃO abre em branco
-                // fingindo estar vazio — salvar assim sobrescreveria o original.
-                if (text == null) {
-                    loadFailed = true
+                val blocked = blockReason(doc, ref.name)
+                if (blocked != null) {
+                    // Binário ou ilegível: NÃO abre em branco fingindo estar
+                    // vazio — salvar assim sobrescreveria o original.
+                    loadBlock = blocked
                     dirty = true
-                    loadError = "Não foi possível ler ${ref.name}"
                     rawText = ""
                     fieldState = TextFieldValue("")
                     return@launch
                 }
-                loadFailed = false
-                loadError = null
+                loadBlock = null
+                val text = (doc as DocContent.Text).content
                 rawText = text
                 dirty = false
                 fieldState = TextFieldValue(text)
@@ -583,10 +599,10 @@ fun VsCodeApp(
     }
 
     fun saveCurrent(silent: Boolean = false) {
-        // Nunca grava quando a leitura falhou: o buffer atual não é o
-        // conteúdo do arquivo e a escrita destruiria o original.
-        if (loadFailed && currentFile != null) {
-            val msg = "Leitura falhou — não salvo para não sobrescrever ${currentFile!!.name}"
+        // Nunca grava quando o buffer não representa o disco: leitura falhou ou o
+        // arquivo é binário (abrir um .png e salvar corromperia o original).
+        loadBlock?.let { reason ->
+            val msg = "$reason — não salvo para não corromper o arquivo"
             if (!silent) Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
             scope.launch { snackbarHostState.showSnackbar(msg) }
             return
@@ -1082,8 +1098,8 @@ fun VsCodeApp(
 
     fun closeTab(ref: DocRef) {
         lspManager.noteClose(ref)
-        // dirty mas com leitura falha não pode ser salvo: o buffer não é o disco.
-        if (ref == currentFile && dirty && !loadFailed) {
+        // dirty mas bloqueado (binário/ilegível) não pode ser salvo.
+        if (ref == currentFile && dirty && loadBlock == null) {
             val snapshot = rawText
             scope.launch {
                 withContext(Dispatchers.IO) { writeRef(ref, snapshot) }
@@ -1094,16 +1110,15 @@ fun VsCodeApp(
             val next = openFiles.lastOrNull()
             currentFile = next
             if (next is DocRef.Local) {
-                val text = FileUtils.readOrNull(next.file)
-                if (text == null) {
-                    loadFailed = true
-                    loadError = "Não foi possível ler ${next.name}"
+                val doc = FileUtils.readDoc(next.file)
+                val blocked = blockReason(doc, next.name)
+                if (blocked != null) {
+                    loadBlock = blocked
                     rawText = ""
                     fieldState = TextFieldValue("")
                 } else {
-                    loadFailed = false
-                    loadError = null
-                    rawText = text
+                    loadBlock = null
+                    rawText = (doc as DocContent.Text).content
                     dirty = false
                     fieldState = TextFieldValue(rawText)
                     clearHistory()
@@ -1116,14 +1131,14 @@ fun VsCodeApp(
                 fieldState = TextFieldValue("")
                 clearHistory()
                 scope.launch {
-                    val text = withContext(Dispatchers.IO) { readRef(next) }
+                    val doc = withContext(Dispatchers.IO) { readRef(next) }
                     if (gen == loadGen) {
-                        if (text == null) {
-                            loadFailed = true
-                            loadError = "Não foi possível ler ${next.name}"
+                        val blocked = blockReason(doc, next.name)
+                        if (blocked != null) {
+                            loadBlock = blocked
                         } else {
-                            loadFailed = false
-                            loadError = null
+                            loadBlock = null
+                            val text = (doc as DocContent.Text).content
                             rawText = text
                             fieldState = TextFieldValue(text)
                             lspManager.noteOpen(next, text)
@@ -1133,8 +1148,7 @@ fun VsCodeApp(
             } else {
                 rawText = ""
                 dirty = false
-                loadFailed = false
-                loadError = null
+                loadBlock = null
                 fieldState = TextFieldValue("")
                 clearHistory()
             }
@@ -1330,9 +1344,9 @@ fun VsCodeApp(
                                 )
                             }
 
-                            if (loadFailed) {
-                                // A leitura falhou: mostrar o editor vazio sem
-                                // aviso levaria o usuário a salvar por cima.
+                            if (loadBlock != null) {
+                                // Binário ou ilegível: mostrar o editor vazio
+                                // sem aviso levaria o usuário a salvar por cima.
                                 Column(
                                     Modifier
                                         .weight(1f)
@@ -1348,14 +1362,14 @@ fun VsCodeApp(
                                     )
                                     Spacer(Modifier.height(12.dp))
                                     Text(
-                                        loadError ?: "Falha ao ler o arquivo",
+                                        loadBlock!!,
                                         color = Color(0xFFF85149),
                                         fontSize = 14.sp,
                                         modifier = Modifier.padding(horizontal = 24.dp)
                                     )
                                     Spacer(Modifier.height(6.dp))
                                     Text(
-                                        "Salvamento bloqueado para não sobrescrever o arquivo.",
+                                        "Salvamento bloqueado para não corromper o arquivo.",
                                         color = theme.foreground.toCompose().copy(alpha = 0.7f),
                                         fontSize = 12.sp,
                                         modifier = Modifier.padding(horizontal = 24.dp)

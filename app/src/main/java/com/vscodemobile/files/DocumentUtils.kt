@@ -17,15 +17,30 @@ object DocumentUtils {
     }
 
     /**
-     * Lê o documento SAF, ou devolve `null` se não deu.
+     * Lê o documento SAF classificando: texto, binário ou ilegível.
      *
-     * Antes devolvia `""` em falha, indistinguível de um arquivo vazio.
+     * Lê bytes crus porque a detecção precisa do byte nulo que denuncia
+     * binário — decodificar antes perderia justamente esse sinal.
      */
-    fun readTextOrNull(context: Context, uri: Uri): String? = try {
-        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+    fun readDoc(context: Context, uri: Uri): DocContent = try {
+        val stream = context.contentResolver.openInputStream(uri)
+        if (stream == null) {
+            DocContent.Unreadable
+        } else {
+            val bytes = stream.use { it.readBytes() }
+            if (FileUtils.looksBinary(bytes)) {
+                DocContent.Binary
+            } else {
+                DocContent.Text(String(bytes, Charsets.UTF_8))
+            }
+        }
     } catch (_: Exception) {
-        null
+        DocContent.Unreadable
     }
+
+    /** Lê o documento SAF, ou devolve `null` se não deu / não for texto. */
+    fun readTextOrNull(context: Context, uri: Uri): String? =
+        (readDoc(context, uri) as? DocContent.Text)?.content
 
     /**
      * Grava no SAF.

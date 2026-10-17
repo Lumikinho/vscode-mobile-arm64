@@ -2,10 +2,30 @@ package com.vscodemobile.files
 
 import java.io.File
 
+/**
+ * Resultado de ler um documento.
+ *
+ * A distinção importa: "vazio" é um texto legítimo, "binário" e "ilegível"
+ * não podem virar `""` porque o editor abriria em branco e o próximo save
+ * sobrescreveria o arquivo com conteúdo corrompido.
+ */
+sealed interface DocContent {
+    data class Text(val content: String) : DocContent
+
+    /** Tem byte nulo nos primeiros [BINARY_PROBE] bytes — não é texto. */
+    data object Binary : DocContent
+
+    /** Não deu para ler (permissão, I/O, arquivo sumiu). */
+    data object Unreadable : DocContent
+}
+
 object FileUtils {
 
     /** Acima disso, ler o arquivo inteiro na memória passa a machucar. */
     const val LARGE_FILE_BYTES = 2_000_000L
+
+    /** Quantos bytes inspecionar para decidir se é texto. */
+    const val BINARY_PROBE = 8_192
 
     private val TEXT_EXT = setOf(
         "kt", "java", "js", "ts", "py", "c", "h", "cpp", "cs", "go",
@@ -28,17 +48,40 @@ object FileUtils {
     }
 
     /**
+     * Heurística de binário: byte nulo no início. É a mesma regra do git.
+     *
+     * Sem isto, abrir um .png pelo explorer SAF "funciona": os bytes viram
+     * texto via decodificação com replacement chars, e salvar grava o lixo de
+     * volta no arquivo — corrompendo de vez.
+     */
+    fun looksBinary(bytes: ByteArray): Boolean {
+        val n = minOf(bytes.size, BINARY_PROBE)
+        for (i in 0 until n) if (bytes[i] == 0.toByte()) return true
+        return false
+    }
+
+    fun readDoc(f: File): DocContent = try {
+        if (!f.isFile) {
+            DocContent.Unreadable
+        } else {
+            val bytes = f.readBytes()
+            if (looksBinary(bytes)) {
+                DocContent.Binary
+            } else {
+                DocContent.Text(String(bytes, Charsets.UTF_8))
+            }
+        }
+    } catch (_: Exception) {
+        DocContent.Unreadable
+    }
+
+    /**
      * Lê o arquivo, ou devolve `null` se não deu.
      *
      * Antes devolvia `""` em qualquer exceção, o que tornava "arquivo vazio"
-     * e "leitura falhou" indistinguíveis: o editor abria em branco, marcava o
-     * doc como limpo e o próximo auto-save sobrescrevia o arquivo original.
+     * e "leitura falhou" indistinguíveis.
      */
-    fun readOrNull(f: File): String? = try {
-        if (!f.isFile) null else f.readText()
-    } catch (_: Exception) {
-        null
-    }
+    fun readOrNull(f: File): String? = (readDoc(f) as? DocContent.Text)?.content
 
     /** Arquivo grande demais para carregar inteiro com segurança. */
     fun isTooLarge(f: File): Boolean =
@@ -66,7 +109,7 @@ object FileUtils {
                 tmp.delete()
             }
             true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             runCatching { tmp.delete() }
             false
         }
