@@ -53,22 +53,19 @@ Núcleo espelhado do `microsoft/vscode` (clone sparse em `vscode-upstream/`):
 - Se o seletor não abrir: Toast de aviso + tentativa via intent crua
 - Diagnóstico de listagem: Toast com o erro exato ou "pasta vazia, toque em ↻"
 
-## Terminal embutido
-Aba TERMINAL com shell local (`sh` na pasta do workspace) e cara de terminal
-comum: prompt com cwd (`~`), histórico (▲▼), `clear`, `cd` rastreado e
-`[exit N]` quando o comando falha. Barra de teclas (Esc, Tab completa
-arquivos, Ctrl grudento, setas), sessões em abas (`Terminal 1, 2…`, `+`),
-seleção para copiar, rolagem horizontal, pinça de fonte persistida e modo
-tela cheia. Sem pty: sem `vim`/prompts interativos — para `pkg` use o
-Termux externo.
-
 ## Terminal com PTY de verdade
+Aba TERMINAL com sessões em abas (`Terminal 1, 2…`, `+`), todas reais:
 - `libtermux.so` compilado do fonte do Termux via ndk-build (forkpty real)
 - Código `com.termux.terminal` + `com.termux.view` vendorizado (GPL-3.0, ver
   LICENSE); `TerminalView` embutido via `AndroidView`
-- Todas as sessões são PTY (`PtySession` + `TerminalScreen` com paleta do
-  tema): vim, prompts, Ctrl+C, setas, Tab do shell, seleção por long-press
+- `PtySession` + `TerminalScreen`: vim, prompts, Ctrl+C, setas, Tab do shell,
+  seleção por long-press, paleta do tema aplicada ao emulador
+- Barra de teclas embaixo (Esc, Tab, Ctrl grudento com C/D/Z, setas) escrevendo
+  bytes de controle direto na PTY; `A−`/`A+` no modo terminal da bottom bar
+- Teto de 8 sessões — cada uma custa 2 threads, 1 processo e o buffer do
+  emulador
 - Alpine também abre em PTY (apk interativo funciona)
+- O PTY nasce no primeiro `updateSize` da view (grade 0×0 quebraria o forkpty)
 
 ## Linux embutido (proot + Alpine)
 - `linux/LinuxManager.kt` — state machine, download com progresso, sha256
@@ -81,10 +78,20 @@ Termux externo.
   (antigo — pode falhar em Android novo), ptrace em algumas ROMs
 
 ## Performance
+- **Editor virtualizado**: gutter e camada de realces só compoem a faixa
+  visível + 8 linhas de overscan. Sem isso eram N `Text` + N `Box` remontados a
+  cada tecla, com N = número de linhas (até 3000 pelo cutoff de highlight)
 - Highlight em `Dispatchers.Default` (debounce 450ms); arquivo grande
   (>100KB ou >3000 linhas) vira texto puro, como `editor.largeFileOptimizations`
-- Problems calculado 1× por texto; undo como `String` (cap 50); I/O em
-  `Dispatchers.IO` com guarda de geração; release com minify + shrink
+- Problems locais em `lineSequence()` + `Dispatchers.Default` (debounce 300ms)
+- Índice da Command Palette construído em IO quando a palette abre — digitar
+  não refaz mais a varredura do workspace
+- `lineColAt`/`cursorLineCol` sem `text.take()`: varrem até o cursor em vez de
+  copiar o prefixo do documento
+- SAF pela via `rawTreeList` (1 query por diretório), não `DocumentFile`
+  (1 query por arquivo)
+- undo como `String` (cap 50); I/O em `Dispatchers.IO` com guarda de geração;
+  release com minify + shrink
 
 ## Temas
 Dark Modern (`#1F1F1F`/`#181818`/borda `#2B2B2B`/accent `#0078D4`),
@@ -102,8 +109,19 @@ cd vscode-mobile-arm64
 .\gradlew :app:assembleDebug
 # APK em: app\build\outputs\apk\debug\app-debug.apk
 ```
-Pré-requisitos: JDK 17+, Android SDK (`platforms;android-34`). Wrapper Gradle 9.7.1
-incluso. ARM64 (`arm64-v8a`), minSdk 26.
+Pré-requisitos: JDK 17+, Android SDK (`platforms;android-34`) e **NDK
+28.2.13676358** (o `libtermux.so` é compilado nativamente por ndk-build).
+Wrapper Gradle 9.7.1 incluso. ARM64 (`arm64-v8a`), minSdk 26.
+
+### CI
+`.github/workflows/build.yml` roda em todo push/PR na `main`:
+JDK 17 (Temurin) → SDK + NDK 28.2.13676358 → `./gradlew :app:assembleDebug`,
+com cache de Gradle e do build nativo, e upload do APK como artefato
+(`vscode-mobile-arm64-debug`, 30 dias).
+
+Detalhe: o input `packages` do `android-actions/setup-android@v3` tem default
+`tools platform-tools`, e o pacote `tools` foi removido do repositório do
+Google — o job precisa sobrescrever para `platform-tools`.
 
 ## Como testar
 1. `adb install app\build\outputs\apk\debug\app-debug.apk` num ARM64 (Android 8+)
@@ -113,12 +131,13 @@ incluso. ARM64 (`arm64-v8a`), minSdk 26.
 4. Pinça no editor muda a fonte (10–28sp); linha do cursor e brackets destacam
 5. Troque de tema (paleta `> Preferences: Color Theme`); confira claro/escuro
 6. Previews no Android Studio: componentes têm previews 360dp claro/escuro (+tablet)
-7. Terminal: aba TERMINAL roda `sh` local; "Termux ↗" abre o app externo (F-Droid)
+7. Terminal: aba TERMINAL com prompt real; `+` cria sessão (até 8);
+   "Termux ↗" abre o app externo (F-Droid)
+8. Abra o Problems e toque num item — deve abrir o arquivo na linha
 
 ## Pendências conhecidas
 - Views Search/Git/Run/Ext ainda usam a `SideBar` legada (só o Explorer migrou)
-- Source Control sem destino na bottom bar
 - Bracket matching ingênuo (ignora strings); quebra de linha longa desalinha gutter
 - Pinça pode disputar gesto com seleção de texto em alguns aparelhos
-- Terminal local sem pty (sem `vim`/prompts); bootstrap com `pkg` não incluído
+- LSP só faz diagnósticos (L1): hover e completion ainda não implementados
 - `WindowInsets.isImeVisible` exige opt-in `ExperimentalLayoutApi` (única exceção a APIs estáveis)
