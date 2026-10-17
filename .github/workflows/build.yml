@@ -14,17 +14,19 @@ concurrency:
 jobs:
   build:
     name: Build APK arm64-v8a
-    runs-on: ubuntu-latest
+    # Fixado: 'ubuntu-latest' migra para Ubuntu 26 em outubro/2026 e o
+    # build nativo do NDK depende do host toolchain.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Tem que bater com ndkVersion do app/build.gradle.kts: o forkpty do
       # terminal e compilado nativamente por ndk-build (externalNativeBuild).
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -34,7 +36,7 @@ jobs:
       # Por isso sobrescrevemos com platform-tools e o resto instala no passo
       # seguinte.
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
         with:
           packages: platform-tools
 
@@ -48,7 +50,7 @@ jobs:
             "ndk;28.2.13676358"
 
       - name: Cache Gradle
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.gradle/caches
@@ -57,7 +59,7 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - name: Cache do build nativo
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             app/.cxx
@@ -76,7 +78,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload do APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vscode-mobile-arm64-debug
           path: app/build/outputs/apk/debug/*.apk
