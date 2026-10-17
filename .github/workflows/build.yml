@@ -29,11 +29,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Sem o input `packages`: o setup-android@v3 pede o pacote `tools`,
-      # que foi removido do repositorio do Google e faz o sdkmanager sair
-      # com codigo 1. Instalamos tudo explicitamente no passo seguinte.
+      # O input `packages` tem default "tools platform-tools" e o pacote `tools`
+      # foi removido do repositorio do Google — o sdkmanager sai com codigo 1.
+      # Por isso sobrescrevemos com platform-tools e o resto instala no passo
+      # seguinte.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       - name: Install SDK packages
         run: |
