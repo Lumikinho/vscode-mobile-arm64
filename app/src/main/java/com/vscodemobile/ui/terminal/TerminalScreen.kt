@@ -173,6 +173,9 @@ fun TerminalScreen(
                     .first { (w, h) -> w > 0 && h > 0 }
                 v.attachSession(pty.create())
                 pty.session?.let { applyPalette(it, fg, bg, accent) }
+                // A PTY notifica por onTextChanged; sem invalidate() aqui a
+                // view nunca repinta o texto novo.
+                pty.onScreenUpdate = { v.invalidate() }
                 v.requestFocus()
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
                 imm.showSoftInput(v, 0)
@@ -183,10 +186,15 @@ fun TerminalScreen(
                 Log.e("VsCodeMobile", "pty lib", e)
             }
         }
-        // Solta a referência à view (ela segura a TerminalSession anexada).
+        // Solta a referência à view (ela segura a TerminalSession anexada) e
+        // o callback de repaint, que senão continua apontando para uma view
+        // destruída e vaza a Activity.
         // A sessão em si continua viva em background, como no VS Code.
-        DisposableEffect(view) {
-            onDispose { mods.view = null }
+        DisposableEffect(view, pty) {
+            onDispose {
+                mods.view = null
+                if (pty.onScreenUpdate != null) pty.onScreenUpdate = null
+            }
         }
         // Barra de teclas: escreve bytes de controle direto no pty
         Row(

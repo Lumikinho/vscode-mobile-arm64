@@ -45,8 +45,21 @@ class PtySession(
     /** Processo já fez fork ao menos uma vez (para overlay "iniciando"). */
     val started: State<Boolean> = _started
 
+    /**
+     * Chamado na main thread sempre que o emulador recebeu bytes do PTY.
+     *
+     * O TerminalSession notifica a tela por `onTextChanged`, e no app do
+     * Termux esse callback é quem chama `invalidate()` na view. Sem isso o
+     * buffer do emulador é preenchido mas a view nunca se redesenha — o
+     * terminal fica preto com só o cursor.
+     */
+    @Volatile
+    var onScreenUpdate: (() -> Unit)? = null
+
     private val client = object : TerminalSessionClient {
-        override fun onTextChanged(changedSession: TerminalSession) {}
+        override fun onTextChanged(changedSession: TerminalSession) {
+            onScreenUpdate?.invoke()
+        }
         override fun onTitleChanged(changedSession: TerminalSession) {}
         override fun onSessionFinished(finishedSession: TerminalSession) {
             main.post { _running.value = false }
