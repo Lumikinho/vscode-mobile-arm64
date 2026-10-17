@@ -1,0 +1,11 @@
+<resources>
+    <color name="ic_launcher_background">#007ACC</color>
+    <color name="vs_blue">#007ACC</color>
+    <color name="vs_bg_dark">#1E1E1E</color>
+    <color name="vs_bg_light">#FFFFFF</color>
+    <color name="vs_sidebar_dark">#252526</color>
+    <color name="vs_keyword_dark">#569CD6</color>
+    <color name="vs_string_dark">#CE9178</color>
+    <color name="vs_comment_dark">#6A9955</color>
+    <color name="vs_text_dark">#D4D4D4</color>
+</resources>

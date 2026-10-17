@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+app/build/
+.kotlin/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Build logs gerados durante o desenvolvimento
+*.log
+
+# Config local (caminho do SDK, varia por maquina)
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.externalNativeBuild/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Nix/Linux extras
+*.hprof

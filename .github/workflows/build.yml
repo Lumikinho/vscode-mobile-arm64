@@ -1,0 +1,91 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build APK arm64-v8a
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Tem que bater com ndkVersion do app/build.gradle.kts: o forkpty do
+      # terminal e compilado nativamente por ndk-build (externalNativeBuild).
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.22.1"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', 'gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Cache do build nativo
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/.cxx
+            app/build/intermediates/cxx
+          key: ndk-${{ runner.os }}-${{ hashFiles('app/src/main/jni/**') }}
+          restore-keys: ndk-${{ runner.os }}-
+
+      - name: Make gradlew executavel
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Testes de instrumentacao (se houver)
+        run: ./gradlew :app:connectedDebugAndroidTest --no-daemon
+        continue-on-error: true
+
+      - name: Upload do APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: vscode-mobile-arm64-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Resumo
+        if: always()
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          if [ -f "$APK" ]; then
+            echo "### APK gerado" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            ls -lh "$APK" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "### libtermux.so (forkpty)" >> "$GITHUB_STEP_SUMMARY"
+          find app/build -name 'libtermux.so' -exec ls -lh {} \; >> "$GITHUB_STEP_SUMMARY" 2>&1 || true

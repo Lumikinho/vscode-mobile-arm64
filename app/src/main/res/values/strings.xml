@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">VSCode Mobile</string>
+    <string name="drawer_open">Abrir explorador</string>
+    <string name="drawer_close">Fechar explorador</string>
+    <string name="save">Salvar</string>
+    <string name="open_termux">Termux</string>
+    <string name="new_file">Novo</string>
+    <string name="no_file_open">Nenhum arquivo aberto</string>
+    <string name="saved">Arquivo salvo</string>
+    <string name="save_error">Erro ao salvar</string>
+    <string name="termux_not_found">Termux não instalado. Instale via F-Droid.</string>
+    <string name="theme">Tema</string>
+</resources>
