@@ -2,9 +2,11 @@ name: Build
 
 on:
   push:
-    branches: [ main ]
+    # Dev e a branch de integracao: e ela que gera o APK de teste. main so
+    # recebe o que ja passou por la.
+    branches: [ Dev, main ]
   pull_request:
-    branches: [ main ]
+    branches: [ Dev, main ]
   workflow_dispatch:
 
 concurrency:

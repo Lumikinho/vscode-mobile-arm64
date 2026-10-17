@@ -23,7 +23,8 @@ data class WorkbenchActions(
     val showProblems: () -> Unit = {},
     val onLinuxSetup: () -> Unit = {},
     val onLinuxShell: () -> Unit = {},
-    val managePlugins: () -> Unit = {}
+    val managePlugins: () -> Unit = {},
+    val openSettings: () -> Unit = {}
 )
 
 /**
@@ -113,6 +114,7 @@ object BuiltinPlugins {
         cmd("workbench.action.debug.start", "Run", "Start Debugging", a.openTermux)
         cmd("workbench.action.selectTheme", "Preferences", "Color Theme", a.showThemes)
         cmd("workbench.plugin.manage", "Plugins", "Manage WebView Plugins", a.managePlugins)
+        cmd("workbench.action.openSettings", "Preferences", "Open Settings", a.openSettings)
     }
 
     private fun registerQuickAccess(a: WorkbenchActions) {

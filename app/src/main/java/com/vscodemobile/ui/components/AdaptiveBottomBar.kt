@@ -40,6 +40,10 @@ import com.vscodemobile.ui.theme.VsCodeTheme
 const val MIN_TERM_FONT_SP = 10
 const val MAX_TERM_FONT_SP = 28
 
+/** Limites da fonte do editor, usados pela tela de configurações. */
+const val MIN_EDITOR_FONT_SP = 8
+const val MAX_EDITOR_FONT_SP = 28
+
 data class NavEntry(val key: String, val icon: String, val label: String)
 
 private enum class BarMode { NAVIGATION, EDITING, TERMINAL }

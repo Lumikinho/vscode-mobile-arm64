@@ -131,7 +131,9 @@ import com.vscodemobile.files.FileUtils
 import com.vscodemobile.termux.TermuxHelper
 import com.vscodemobile.ui.components.AdaptiveBottomBar
 import com.vscodemobile.ui.components.BottomBarState
+import com.vscodemobile.ui.components.MAX_EDITOR_FONT_SP
 import com.vscodemobile.ui.components.MAX_TERM_FONT_SP
+import com.vscodemobile.ui.components.MIN_EDITOR_FONT_SP
 import com.vscodemobile.ui.components.MIN_TERM_FONT_SP
 import com.vscodemobile.ui.components.Breadcrumb
 import com.vscodemobile.ui.components.CommandPaletteSheet
@@ -172,6 +174,10 @@ import com.vscodemobile.ui.plugins.PluginManagerSheet
 import com.vscodemobile.ui.plugins.PluginSheetContent
 import com.vscodemobile.ui.plugins.PluginSource
 import com.vscodemobile.ui.plugins.SensitiveCommands
+import com.vscodemobile.ui.settings.AppVersion
+import com.vscodemobile.ui.settings.SettingsSheet
+import com.vscodemobile.ui.settings.UpdateChecker
+import com.vscodemobile.ui.settings.UpdateState
 import com.vscodemobile.ui.workbench.CommandRegistry
 import org.json.JSONObject
 import com.vscodemobile.ui.workbench.QuickAccessProvider
@@ -246,6 +252,22 @@ fun VsCodeApp(
     var sheetVisible by remember { mutableStateOf(false) }
     var panelTab by remember { mutableStateOf(0) } // 0 problems 1 output 2 terminal
     var showPalette by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+
+    // Versão do app e checagem contra a release do GitHub. A versão vem do
+    // PackageManager em vez de constante para não divergir do gradle.
+    val appInfo = remember {
+        runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0)
+        }.getOrNull()
+    }
+    val installedVersion = appInfo?.versionName ?: "?"
+    val installedVersionCode = appInfo?.let {
+        if (android.os.Build.VERSION.SDK_INT >= 28) it.longVersionCode else it.versionCode.toLong()
+    } ?: 0L
+    val currentVersion = remember(installedVersion) { AppVersion.parse(installedVersion) }
+    var updateState by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+    val updateChecker = remember { UpdateChecker() }
     var showThemePicker by remember { mutableStateOf(false) }
     var showNewFile by remember { mutableStateOf(false) }
     var showNewFolder by remember { mutableStateOf(false) }
@@ -1270,7 +1292,8 @@ fun VsCodeApp(
                 showProblems = { panelTab = 0; sheetVisible = true },
                 onLinuxSetup = { showLinuxSetup = true },
                 onLinuxShell = { openLinuxShell() },
-                managePlugins = { showPluginManager = true }
+                managePlugins = { showPluginManager = true },
+                openSettings = { showSettings = true }
             )
         )
         // Índice da palette construído fora da composição. Antes, items() fazia
@@ -1418,7 +1441,11 @@ fun VsCodeApp(
                                             { menuOpen = false; pickFolder() }
                                         ),
                                         MenuAction(
-                                            Codicon.SettingsGear, "Color Theme",
+                                            Codicon.SettingsGear, "Configurações",
+                                            { menuOpen = false; showSettings = true }
+                                        ),
+                                        MenuAction(
+                                            Codicon.Paintcan, "Color Theme",
                                             { menuOpen = false; showThemePicker = true }
                                         )
                                     )
@@ -1713,6 +1740,46 @@ fun VsCodeApp(
                     PluginSource.save(context.applicationContext, plugins)
                 },
                 onClose = { showPluginManager = false }
+            )
+        }
+    }
+    if (showSettings) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettings = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = chrome.panel
+        ) {
+            SettingsSheet(
+                versionName = installedVersion,
+                versionCode = installedVersionCode,
+                updateState = updateState,
+                onCheckUpdate = {
+                    updateState = UpdateState.Checking
+                    scope.launch {
+                        updateState = runCatching { updateChecker.check(currentVersion) }
+                            .getOrElse { UpdateState.Failed(it.message ?: "falha ao verificar") }
+                    }
+                },
+                onOpenUrl = { url ->
+                    runCatching {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.content.Intent.ACTION_VIEW,
+                                android.net.Uri.parse(url)
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                },
+                editorFontSp = editorFontSize,
+                onEditorFontSp = { v ->
+                    editorFontSize = v.coerceIn(MIN_EDITOR_FONT_SP, MAX_EDITOR_FONT_SP)
+                },
+                terminalFontSp = terminalFontSp,
+                onTerminalFontSp = { setTerminalFont(it) },
+                onColorTheme = { showSettings = false; showThemePicker = true },
+                onManagePlugins = { showSettings = false; showPluginManager = true },
+                onUserland = { showSettings = false; showLinuxSetup = true },
+                onDismiss = { showSettings = false }
             )
         }
     }

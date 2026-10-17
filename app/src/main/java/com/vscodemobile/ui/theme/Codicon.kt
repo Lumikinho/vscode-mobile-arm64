@@ -83,6 +83,16 @@ object Codicon {
     const val CollapseAll = "\uEAC5"
     const val ExpandAll = "\uEB95"
 
+    // Codepoints oficiais do vscode-codicons (src/template/mapping.json).
+    const val Info = "\uEA74"
+    const val Paintcan = "\uEB2A"
+    const val TextSize = "\uEB69"
+    const val Remove = "\uEB3B"
+    const val Package = "\uEB29"
+    const val CloudDownload = "\uEAC2"
+    const val Versions = "\uEB78"
+    const val GitHub = "\uEA84"
+
     val all: List<Pair<String, String>> = listOf(
         "files" to Files, "search" to Search, "source-control" to SourceControl,
         "debug" to Debug, "debug-start" to DebugStart, "debug-stop" to DebugStop,
