@@ -1,5 +1,8 @@
 package com.vscodemobile.ui.settings
 
+import android.util.Log
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -31,24 +34,33 @@ class UpdateChecker(
 ) {
 
     /**
-     * Verifica sem bloquear e publica o resultado. Chamadas concorrentes
-     * compartilham a mesma consulta: tocar duas vezes em "verificar" não deve
-     * gerar duas requisições.
+     * Verifica sem bloquear e publica o resultado.
+     *
+     * A troca para [Dispatchers.IO] é feita aqui, e não no chamador: `launch`
+     * numa corrotina de Compose roda em `Dispatchers.Main`, e I/O de rede na
+     * main thread lança `NetworkOnMainThreadException` — que tem `message` nulo
+     * e virava "sem conexão" mesmo com a rede boa.
      */
     suspend fun check(current: AppVersion?): UpdateState {
         return try {
-            val (tag, url) = fetchTag()
+            val (tag, url) = withContext(Dispatchers.IO) { fetchTag() }
             when (AppVersion.isNewer(tag, current)) {
                 true -> UpdateState.Available(AppVersion.parse(tag)?.toString() ?: tag, url)
                 false -> UpdateState.UpToDate(AppVersion.parse(tag)?.toString() ?: tag)
                 null -> UpdateState.Failed("tag de release em formato desconhecido: $tag")
             }
         } catch (e: Exception) {
-            UpdateState.Failed(e.message ?: "sem conexão")
+            Log.w(TAG, "checagem de versão falhou", e)
+            // A causa importa: sem o tipo, uma falha de DNS e uma de TLS viram
+            // a mesma frase.
+            UpdateState.Failed(
+                e.message ?: "${e.javaClass.simpleName} na consulta de versão"
+            )
         }
     }
 
     companion object {
+        private const val TAG = "VsCodeMobile/versao"
         const val DEFAULT_REPO = "Lumikinho/vscode-mobile-arm64"
         const val ENDPOINT = "https://api.github.com/repos/$DEFAULT_REPO/releases/latest"
 
