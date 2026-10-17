@@ -33,10 +33,28 @@ android {
         }
     }
 
+    // Chave de debug versionada no repo, e nao a `~/.android/debug.keystore`
+    // de cada maquina. Sem isso, cada run do CI gera um keystore novo e cada
+    // APK sai com assinatura diferente — o que impede instalar um build novo
+    // por cima do anterior (INSTALL_FAILED_UPDATE_INCOMPATIBLE) e obriga a
+    // desinstalar, levando junto os dados do app e o prefixo do Termux.
+    // Keystore de debug nao e segredo.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            // O app nao vai para a Play Store, entao release usa a mesma chave
+            // de debug: assim o APK de release e o de teste trocam entre si.
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -44,6 +62,7 @@ android {
         }
         debug {
             applicationIdSuffix = ".debug"
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 
