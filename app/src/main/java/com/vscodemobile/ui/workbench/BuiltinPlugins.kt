@@ -108,7 +108,7 @@ object BuiltinPlugins {
         cmd("workbench.action.terminal.toggleTerminal", "Terminal", "Toggle Integrated Terminal", { a.togglePanel(2) })
         cmd("workbench.action.terminal.new", "Terminal", "Create New Terminal", a.restartShell)
         cmd("workbench.action.terminal.openTermux", "Terminal", "Open in Termux", a.openTermux)
-        cmd("workbench.linux.setupAlpine", "Linux", "Setup Alpine", a.onLinuxSetup)
+        cmd("workbench.linux.setupAlpine", "Linux", "Install Termux Userland", a.onLinuxSetup)
         cmd("workbench.linux.openShell", "Linux", "Open Shell", a.onLinuxShell)
         cmd("workbench.action.debug.start", "Run", "Start Debugging", a.openTermux)
         cmd("workbench.action.selectTheme", "Preferences", "Color Theme", a.showThemes)
