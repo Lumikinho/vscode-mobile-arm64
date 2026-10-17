@@ -135,6 +135,11 @@ Google — o job precisa sobrescrever para `platform-tools`.
    "Termux ↗" abre o app externo (F-Droid)
 8. Abra o Problems e toque num item — deve abrir o arquivo na linha
 
+## Registro de entregas
+O histórico de entregas, correções, vazamentos e otimizações fica no Notion,
+dentro da página **Projects** → banco **VSCode Mobile — Entregas** (29
+registros, com Tipo, Área, Status, Data e Detalhes).
+
 ## Pendências conhecidas
 - Views Search/Git/Run/Ext ainda usam a `SideBar` legada (só o Explorer migrou)
 - Bracket matching ingênuo (ignora strings); quebra de linha longa desalinha gutter
