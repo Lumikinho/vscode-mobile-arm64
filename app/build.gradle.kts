@@ -12,7 +12,18 @@ android {
     defaultConfig {
         applicationId = "com.vscodemobile"
         minSdk = 26
-        targetSdk = 34
+
+        // NAO subir isto para 29+. Medido no aparelho (Android 16 / SDK 36):
+        //
+        //   targetSdk 34 -> untrusted_app       -> exec do filesDir: Permission denied (rc=126)
+        //   targetSdk 29 -> untrusted_app_29    -> exec do filesDir: Permission denied (rc=126)
+        //   targetSdk 28 -> untrusted_app_27    -> exec do filesDir: OK
+        //
+        // A partir de API 29 o dominio SELinux perde `execute` sobre
+        // app_data_file, e TODO o userland (bash, coreutils, apt) deixa de
+        // rodar. O proprio Termux mantem targetSdk 28 por causa disso.
+        // Compilar contra 34 continua valido; so o alvo muda.
+        targetSdk = 28
         versionCode = 2
         versionName = "1.1.0"
 
@@ -59,7 +70,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.documentfile:documentfile:1.0.1")
-    implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("com.google.android.material:material:1.12.0")

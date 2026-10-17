@@ -157,9 +157,9 @@ import com.vscodemobile.ui.theme.Codicon
 import com.vscodemobile.ui.theme.CodiconIcon
 import com.vscodemobile.ui.theme.VsCodeTheme
 import com.vscodemobile.ui.theme.vscodeColorsFor
-import com.vscodemobile.linux.LinuxEnv
-import com.vscodemobile.linux.LinuxManager
-import com.vscodemobile.linux.LinuxState
+import com.vscodemobile.linux.PrefixState
+import com.vscodemobile.linux.TermuxEnv
+import com.vscodemobile.linux.TermuxPrefix
 import com.vscodemobile.ui.state.DocRef
 import com.vscodemobile.ui.state.ExplorerViewModel
 import com.vscodemobile.ui.state.LanguageServerManager
@@ -318,32 +318,54 @@ fun VsCodeApp(
         }
     }
 
-    /** Fábrica da sessão PTY padrão (sh interativo do sistema). */
-    fun makePtyShell(label: String = "PTY"): PtySession = PtySession(
-        context.applicationContext,
-        "/system/bin/sh",
-        filesDirPath,
-        arrayOf("sh", "-i"),
-        arrayOf(
-            "TERM=xterm-256color",
-            "HOME=$filesDirPath",
-            "PATH=/system/bin:/vendor/bin",
-            "TMPDIR=${context.cacheDir.absolutePath}",
-            "PS1=$ "
-        ),
-        label
-    )
+    // Userland do Termux instalado no app. Enquanto nao houver, o terminal
+    // cai no sh do sistema (que e o toybox do Android: existe, mas nao tem
+    // coreutils, apt nem nada de programacao).
+    val termux = remember { TermuxPrefix(context.applicationContext) }
+    val prefixState by termux.state.collectAsStateWithLifecycle()
+    var showLinuxSetup by remember { mutableStateOf(false) }
+
+    /**
+     * Fábrica da sessão PTY padrão: bash do Termux quando instalado, senão o
+     * sh do sistema. Não há proot: o binário roda direto, e é por isso que o
+     * targetSdk precisa ficar em 28.
+     */
+    fun makePtyShell(label: String = "TERM"): PtySession {
+        val bash = termux.shell()
+        return if (bash.canExecute()) {
+            PtySession(
+                context.applicationContext,
+                bash.absolutePath,
+                filesDirPath,
+                // -i e não -l: o login tentaria ler o /etc/profile compilado no
+                // binário do Termux. O ~/.bashrc gerado cobre esse papel.
+                arrayOf("bash", "-i"),
+                termux.env(filesDirPath),
+                label
+            )
+        } else {
+            PtySession(
+                context.applicationContext,
+                "/system/bin/sh",
+                filesDirPath,
+                arrayOf("sh", "-i"),
+                arrayOf(
+                    "TERM=xterm-256color",
+                    "HOME=$filesDirPath",
+                    "PATH=/system/bin:/vendor/bin",
+                    "TMPDIR=${context.cacheDir.absolutePath}",
+                    "PS1=$ "
+                ),
+                label
+            )
+        }
+    }
 
     val shells = remember {
         mutableStateListOf<TermSession>().also {
             if (ensurePtyLib()) it.add(makePtyShell())
         }
     }
-
-    // Linux embutido (proot + Alpine): baixa uma vez, sessões usam pipes
-    val linuxManager = remember { LinuxManager(context.applicationContext) }
-    val linuxState by linuxManager.state.collectAsStateWithLifecycle()
-    var showLinuxSetup by remember { mutableStateOf(false) }
 
     // Cliente LSP (diagnósticos JS via socket localhost; ver LanguageServerManager)
     val lspManager = remember(workspace) { LanguageServerManager(workspace) }
@@ -394,28 +416,22 @@ fun VsCodeApp(
         prefs.edit().putInt(KEY_TERM_FONT, terminalFontSp).apply()
     }
 
-    /** Abre shell do Linux embutido (ou a tela de setup se ausente). */
+    /** Abre um shell do Termux (ou a tela de instalação se ainda não houver). */
     fun openLinuxShell() {
-        val cmd = linuxManager.prootCommand()
-        if (cmd == null) {
+        if (!termux.isReady()) {
             showLinuxSetup = true
             return
         }
         if (!ensurePtyLib()) return
-        val env = linuxManager.prootEnv().map { (k, v) -> "$k=$v" }.toTypedArray()
-        // prootCommand termina em /bin/sh; troca por "/bin/sh -i" (interativo)
-        val args = cmd.drop(1).dropLast(1) + listOf("/bin/sh", "-i")
-        val s = PtySession(
-            context.applicationContext,
-            cmd.first(),
-            context.filesDir.absolutePath,
-            args.toTypedArray(),
-            env,
-            "ALPINE"
-        )
+        val s = makePtyShell("TERMUX")
         s.start()
-        shells.add(s)
-        activeShellIdx = shells.lastIndex
+        if (shells.size >= MAX_TERM_SESSIONS) {
+            shells[activeShellIdx.coerceIn(shells.indices)].stop()
+            shells[activeShellIdx.coerceIn(shells.indices)] = s
+        } else {
+            shells.add(s)
+            activeShellIdx = shells.lastIndex
+        }
         sheetView = null
         panelTab = 2
         sheetVisible = true
@@ -1632,8 +1648,8 @@ fun VsCodeApp(
     // ===== DIALOGS =====
     if (showLinuxSetup) {
         LinuxSetupSheet(
-            state = linuxState,
-            onDownload = { scope.launch { linuxManager.setup() } },
+            state = prefixState,
+            onDownload = { scope.launch { termux.install() } },
             onOpenShell = {
                 showLinuxSetup = false
                 openLinuxShell()
@@ -2101,25 +2117,34 @@ private fun NameDialog(title: String, hint: String, onDismiss: () -> Unit, onCon
 // ---------- LINUX EMBUTIDO (setup proot + Alpine) ----------
 @Composable
 private fun LinuxSetupSheet(
-    state: LinuxState,
+    state: PrefixState,
     onDownload: () -> Unit,
     onOpenShell: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Linux embutido (Alpine)") },
+        title = { Text("Termux neste app") },
         text = {
             Column(Modifier.fillMaxWidth()) {
                 Text(
-                    "Sistema Linux dentro do app via proot: apk, python, git. " +
-                        "Baixa ~10 MB uma vez (proot + Alpine minirootfs).",
+                    "O mesmo userland do Termux, instalado dentro do app: bash, " +
+                        "coreutils, git, python, apt. Sem proot e sem root — os " +
+                        "binários rodam direto, porque o alvo do app é API 28.",
                     fontSize = 13.sp
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Baixa ${formatMb(TermuxEnv.BOOTSTRAP_BYTES)} do repositório " +
+                        "oficial do Termux, confere o sha256 e extrai. " +
+                        "Independe do app Termux instalado no celular.",
+                    fontSize = 12.sp,
+                    color = Color(0xFF9DA5B4)
                 )
                 Spacer(Modifier.height(12.dp))
                 when (state) {
-                    is LinuxState.Missing -> Text("Não instalado.", fontSize = 13.sp)
-                    is LinuxState.Downloading -> {
+                    is PrefixState.Missing -> Text("Não instalado.", fontSize = 13.sp)
+                    is PrefixState.Downloading -> {
                         Text(
                             "Baixando ${state.label}… ${formatMb(state.done)}" +
                                 if (state.total > 0) " / ${formatMb(state.total)}" else "",
@@ -2135,18 +2160,24 @@ private fun LinuxSetupSheet(
                             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         }
                     }
-                    is LinuxState.Verifying -> {
+                    is PrefixState.Verifying -> {
                         Text("Verificando sha256…", fontSize = 13.sp)
                         Spacer(Modifier.height(8.dp))
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
-                    is LinuxState.Extracting -> {
-                        Text("Extraindo rootfs…", fontSize = 13.sp)
+                    is PrefixState.Extracting -> {
+                        Text(
+                            "Extraindo ${state.done} de ${state.total} arquivos…",
+                            fontSize = 13.sp
+                        )
                         Spacer(Modifier.height(8.dp))
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        LinearProgressIndicator(
+                            progress = { state.done.toFloat() / state.total.coerceAtLeast(1).toFloat() },
+                            modifier = Modifier.fillMaxWidth()
+                        )
                     }
-                    is LinuxState.Ready -> Text("Pronto! Abra um shell Alpine.", fontSize = 13.sp)
-                    is LinuxState.Error -> Text(
+                    is PrefixState.Ready -> Text("Pronto. Abra um shell.", fontSize = 13.sp)
+                    is PrefixState.Error -> Text(
                         "Erro: ${state.message}",
                         fontSize = 13.sp,
                         color = Color(0xFFF85149)
@@ -2156,9 +2187,9 @@ private fun LinuxSetupSheet(
         },
         confirmButton = {
             when (state) {
-                is LinuxState.Ready -> TextButton(onClick = onOpenShell) { Text("Abrir shell") }
-                is LinuxState.Error, is LinuxState.Missing ->
-                    TextButton(onClick = onDownload) { Text("Baixar") }
+                is PrefixState.Ready -> TextButton(onClick = onOpenShell) { Text("Abrir shell") }
+                is PrefixState.Error, is PrefixState.Missing ->
+                    TextButton(onClick = onDownload) { Text("Instalar") }
                 else -> {}
             }
         },
