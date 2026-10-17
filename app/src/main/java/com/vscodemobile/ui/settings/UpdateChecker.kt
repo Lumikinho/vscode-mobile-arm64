@@ -75,9 +75,11 @@ class UpdateChecker(
                         }
                         tag to page
                     }
-                    // Repositório privado ou sem releases. Não é falha de rede.
+                    // Repo sem releases, ou sem permissão de leitura. São casos
+                    // distintos com o mesmo código, então a mensagem cobre os
+                    // dois em vez de cravar um motivo errado.
                     403, 404 -> throw IOException(
-                        "o repositório é privado ou ainda não tem release publicada"
+                        "sem release publicada (ou repositório inacessível)"
                     )
                     else -> throw IOException("HTTP ${conn.responseCode}")
                 }
